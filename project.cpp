@@ -1,4 +1,4 @@
-﻿#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING 1;
+#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING 1;
 #define _CRT_SECURE_NO_WARNINGS 1;
 #include <iostream>
 #include <windows.h>
@@ -9,6 +9,7 @@
 #include <locale>
 #include <codecvt>
 #include <experimental/filesystem>
+#include <thread>
 
 namespace fs = std::experimental::filesystem;
 
@@ -121,8 +122,6 @@ public:
             wchar_t* wchararguments = new wchar_t[wstr.size() + 1];
             std::wcscpy(wchararguments, wstr.c_str());
 
-
-
             if (!CreateProcess(
                 wcharprogramPath,
                 const_cast<wchar_t*>(wchararguments),
@@ -142,13 +141,13 @@ public:
                 DWORD exitCode;
                 if (WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0) {
                     if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
-                        std::cerr << "[UNEXPECTED] Failed to get exit code of child process. Saving file: " << current_mutation << ".jpg\n";
+                        std::cerr << "[UNEXPECTED] Failed to get exit code of the process. Saving file: " << current_mutation << ".jpg\n";
                     }
                     else if (exitCode == STATUS_ACCESS_VIOLATION) {
-                        std::cout << "[CRASH] Child process encountered an access violation. Saving file: " << current_mutation << ".jpg\n";
+                        std::cout << "[CRASH] Process encountered an access violation. Saving file: " << current_mutation << ".jpg\n";
                     }
                     else {
-                        std::cout << "[PROCESS INFO] Child process exited with code: " << exitCode << std::endl;
+                        std::cout << "[PROCESS INFO] Process exited with code: " << exitCode << std::endl;
                         crashes_detected--;
                         const fs::path filePath(exampleOutFile);
                         try {
@@ -160,7 +159,7 @@ public:
                     }
                 }
                 else {
-                    std::cerr << "[UNEXPECTED] Child process crashed or terminated unexpectedly. Saving file: " << current_mutation << ".jpg\n";
+                    std::cerr << "[UNEXPECTED] Process crashed or terminated unexpectedly. Saving file: " << current_mutation << ".jpg\n";
                 }
 
                 std::cout << i + 1 << " / " << iteration_count << std::endl;
@@ -182,13 +181,296 @@ public:
                 mutationEngine.mutate();
             }
         }
-        std::cout << "crashes: " << crashes_detected << std::endl;
     }
 };
 
-class genetic_algorithm : algorithm {
-    void execute() {
 
+class dumb_algorithm_th : algorithm {
+    std::string programPath;
+    std::string exampleQuery;
+    int iteration_count;
+    int current_mutation;
+    void checkForCrash(wchar_t* wcharprogramPath, std::string exampleOutFile, jpgManager mutationEngine, STARTUPINFO si, PROCESS_INFORMATION pi, int a, int i) {
+        std::string exampleOutFile2 = " ";
+        exampleOutFile2 += exampleOutFile;
+        exampleOutFile2 += " ";
+        std::wstring wstr(exampleOutFile2.begin(), exampleOutFile2.end());
+        wchar_t* wchararguments = new wchar_t[wstr.size() + 1];
+        std::wcscpy(wchararguments, wstr.c_str());
+
+        if (!CreateProcess(
+            wcharprogramPath,
+            const_cast<wchar_t*>(wchararguments),
+            NULL,
+            NULL,
+            FALSE,
+            0,
+            NULL,
+            NULL,
+            &si,
+            &pi
+        )) {
+            printf("[ERROR] CreateProcess failed (%d).\n", GetLastError());
+        }
+        else {
+            crashes_detected++;
+            DWORD exitCode;
+            if (WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0) {
+                if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
+                    std::cerr << "[UNEXPECTED] Failed to get exit code of the process. Saving file: " << current_mutation << ".jpg\n";
+                }
+                else if (exitCode == STATUS_ACCESS_VIOLATION) {
+                    std::cout << "[CRASH] Process encountered an access violation. Saving file: " << current_mutation << ".jpg\n";
+                }
+                else {
+                    std::cout << "[PROCESS INFO] Process exited with code: " << exitCode << std::endl;
+                    crashes_detected--;
+                    const fs::path filePath(exampleOutFile);
+                    try {
+                        fs::remove(filePath);
+                    }
+                    catch (const fs::filesystem_error& ex) {
+                        std::cout << "[ERROR] Failed to remove the file: " << ex.what() << "\n";
+                    }
+                }
+            }
+            else {
+                std::cerr << "[UNEXPECTED] Process crashed or terminated unexpectedly. Saving file: " << current_mutation << ".jpg\n";
+            }
+
+            std::cout << i + 1 << " / " << iteration_count << std::endl;
+            delete[] wchararguments;
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        {
+            exampleOutFile = "";
+            fs::path examplepath(exampleQuery);
+            std::string outfilename{};
+            outfilename += std::to_string(++current_mutation);
+            outfilename += ".jpg";
+            fs::path eoutpath = examplepath.parent_path() / outfilename;
+            exampleOutFile += eoutpath.string();
+
+            mutationEngine.setOut(exampleOutFile);
+            mutationEngine.setMC(a);
+            mutationEngine.mutate();
+        }
+    }
+public:
+    dumb_algorithm_th(std::string p, std::string q, int i, int m) : programPath(p), exampleQuery(q), iteration_count(i), current_mutation(m) {};
+    void execute() {
+        std::wstring wstrp(programPath.begin(), programPath.end());
+        wchar_t* wcharprogramPath = new wchar_t[wstrp.size() + 1];
+        std::wcscpy(wcharprogramPath, wstrp.c_str());
+
+        STARTUPINFO si;
+        PROCESS_INFORMATION pi;
+
+        ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        ZeroMemory(&pi, sizeof(pi));
+
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> distr(15, 150);
+
+        std::string exampleOutFile{};
+        {
+            fs::path examplepath(exampleQuery);
+            std::string outfilename{};
+            outfilename += std::to_string(++current_mutation);
+            outfilename += ".jpg";
+            fs::path eoutpath = examplepath.parent_path() / outfilename;
+            exampleOutFile += eoutpath.string();
+        }
+
+        jpgManager mutationEngine(exampleQuery, exampleOutFile, distr(gen));
+        mutationEngine.mutate();
+
+        int numThreads = iteration_count;
+        std::vector<std::thread> threads;
+        for (int i = 0; i < numThreads; ++i) {
+            int a = distr(gen);
+            threads.emplace_back([&, wcharprogramPath, exampleOutFile, mutationEngine, si, pi, a, i]() {
+                checkForCrash(wcharprogramPath, exampleOutFile, mutationEngine, si, pi, a, i);
+                });
+        }
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+    }
+};
+
+
+class genetic_algorithm : algorithm {
+private:
+    std::string programPath;
+    std::string exampleQuery;
+    int crashnum;
+
+    bool hasCrashed(const std::string& inputFile) {
+        std::cout << crashnum + 1 << std::endl;
+        std::wstring wstrp(programPath.begin(), programPath.end());
+        wchar_t* wcharprogramPath = new wchar_t[wstrp.size() + 1];
+        std::wcscpy(wcharprogramPath, wstrp.c_str());
+
+        std::string exampleOutFile2 = " ";
+        exampleOutFile2 += inputFile;
+        exampleOutFile2 += " ";
+        std::wstring wstr(exampleOutFile2.begin(), exampleOutFile2.end());
+        wchar_t* wchararguments = new wchar_t[wstr.size() + 1];
+        std::wcscpy(wchararguments, wstr.c_str());
+
+        STARTUPINFO si;
+        PROCESS_INFORMATION pi;
+
+        ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        ZeroMemory(&pi, sizeof(pi));
+
+        std::string exampleOutFile{};
+        {
+            fs::path examplepath(inputFile);
+            std::string outfilename{};
+            outfilename += std::to_string(++crashnum);
+            outfilename += ".jpg";
+            fs::path eoutpath = examplepath.parent_path() / outfilename;
+            exampleOutFile += eoutpath.string();
+        }
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> distr(15, 150);
+
+        /*jpgManager mutationEngine(inputFile, exampleOutFile, distr(gen));
+        mutationEngine.mutate();*/
+
+        if (!CreateProcess(
+            wcharprogramPath,
+            const_cast<wchar_t*>(wchararguments),
+            NULL,
+            NULL,
+            FALSE,
+            0,
+            NULL,
+            NULL,
+            &si,
+            &pi
+        )) {
+            printf("CreateProcess failed (%d).\n", GetLastError());
+            return 0;
+        }
+        crashes_detected++;
+        DWORD exitCode;
+        if (WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0) {
+            if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
+                std::cerr << "Failed to get exit code of child process." << std::endl;
+                return 1;
+            }
+            else if (exitCode == STATUS_ACCESS_VIOLATION) {
+                std::cout << "Child process encountered an access violation." << std::endl;
+                return 1;
+            }
+            else {
+                std::cout << "Child process exited with code: " << exitCode << std::endl;
+                crashes_detected--;
+                const fs::path filePath(exampleOutFile);
+                try {
+                    fs::remove(filePath);
+                }
+                catch (const fs::filesystem_error& ex) {
+                    std::cout << "[ERROR] Failed to remove the file: " << ex.what() << "\n";
+                }
+                return 0;
+            }
+        }
+        else {
+            std::cerr << "Child process crashed or terminated unexpectedly." << std::endl;
+            return 1;
+        }
+    }
+    void crossover(const std::string& file1Path, const std::string& file2Path, const std::string& outputPath) {
+        std::ifstream file1(file1Path, std::ios::binary);
+        std::ifstream file2(file2Path, std::ios::binary);
+        std::ofstream output(outputPath, std::ios::binary);
+
+        if (!file1 || !file2 || !output) {
+            //std::cerr << "Error opening files." << std::endl;
+            return;
+        }
+        const int headerSize = 16;
+        std::vector<char> headerBuffer(headerSize);
+        file1.read(headerBuffer.data(), headerSize);
+        output.write(headerBuffer.data(), headerSize);
+
+        std::vector<char> file1Data((std::istreambuf_iterator<char>(file1)), std::istreambuf_iterator<char>());
+        std::vector<char> file2Data((std::istreambuf_iterator<char>(file2)), std::istreambuf_iterator<char>());
+        const int crossoverPoint = std::rand() % (file1Data.size() - headerSize) + headerSize;
+        output.write(file1Data.data() + headerSize, crossoverPoint - headerSize);
+        output.write(file2Data.data() + crossoverPoint, file2Data.size() - crossoverPoint);
+
+        file1.close();
+        file2.close();
+        output.close();
+    }
+public:
+    genetic_algorithm(const std::string& i, const std::string& q, int n) : programPath(i), exampleQuery(q), crashnum(n) {};
+    void execute() {
+        const int POPULATION_SIZE = 10;
+        const int MAX_GENERATIONS = 100;
+        const double MUTATION_RATE = 0.1;
+        const double CROSSOVER_RATE = 0.8;
+
+        std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
+        std::vector<std::string> population(POPULATION_SIZE);
+        for (auto& inputFile : population) {
+            int n = 10;
+            fs::path examplepath(exampleQuery);
+            std::string outfilename{};
+            outfilename += std::to_string(n);
+            outfilename += ".jpg";
+            fs::path eoutpath = examplepath.parent_path() / outfilename;
+            inputFile += eoutpath.string();
+            jpgManager mutationEngine(exampleQuery, inputFile, 30);
+            mutationEngine.mutate();
+        }
+
+        int generation{};
+        while (generation < MAX_GENERATIONS) {
+            std::vector<std::string> nextGeneration;
+            std::vector<bool> crashedPopulation(POPULATION_SIZE, false);
+            for (int i = 0; i < POPULATION_SIZE; ++i) {
+                if (hasCrashed(population[i])) {
+                    std::string a;
+                    std::cin >> a;
+                    crashedPopulation[i] = true;
+                }
+            }
+            for (int i = 0; i < POPULATION_SIZE; ++i) {
+                if (crashedPopulation[i]) {
+                    continue;
+                }
+                for (int j = i + 1; j < POPULATION_SIZE; ++j) {
+                    if (crashedPopulation[j]) {
+                        continue;
+                    }
+                    if (static_cast<float>(std::rand()) / RAND_MAX < CROSSOVER_RATE) {
+                        std::string offspring;
+                        crossover(population[i], population[j], offspring);
+                        nextGeneration.push_back(offspring);
+                    }
+                }
+            }
+            for (auto& individual : nextGeneration) {
+                if (static_cast<double>(std::rand()) / RAND_MAX < MUTATION_RATE) {
+                    jpgManager mutationEngine(individual, individual, 15);
+                    mutationEngine.mutate();
+                }
+            }
+            population = std::move(nextGeneration);
+            ++generation;
+        }
     }
 };
 
@@ -275,4 +557,5 @@ int main(int argc, char** argv)
 {
     Fuzzer fuzzer;
     fuzzer.run(argc, argv);
+    std::cout << "crashes: " << crashes_detected << std::endl;
 }
