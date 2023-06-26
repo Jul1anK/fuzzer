@@ -1,19 +1,58 @@
 #define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING 1;
 #define _CRT_SECURE_NO_WARNINGS 1;
+#include <wx/spinctrl.h>
+#include <wx/wx.h>
 #include <iostream>
+#include <vector>
 #include <windows.h>
 #include <string>
 #include <fstream>
-#include <vector>
 #include <random>
 #include <locale>
 #include <codecvt>
 #include <experimental/filesystem>
 #include <thread>
+#include <regex>
 
 namespace fs = std::experimental::filesystem;
 
 int crashes_detected;
+
+class Logger {
+    static void log(const std::string& message) {
+        std::ofstream logFile("log.txt", std::ios::app);
+        if (logFile.is_open()) {
+            auto now = std::chrono::system_clock::now();
+            std::time_t currentTime = std::chrono::system_clock::to_time_t(now);
+            char buffer[80];
+            std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", std::localtime(&currentTime));
+            std::cout << "[" << buffer << "] " << message << std::endl;
+            logFile << "[" << buffer << "] " << message << std::endl;
+            logFile.close();
+        }
+    }
+public:
+    static void logError(const std::string& message, std::regex regex) {
+        std::string logmessage = "[ERROR] " + message;
+        if(std::regex_search(logmessage, regex))
+            log(logmessage);
+    }
+    static void logUnexpected(const std::string& message, std::regex regex) {
+        std::string logmessage = "[UNEXPECTED] " + message;
+        if (std::regex_search(logmessage, regex))
+            log(logmessage);
+    }
+    static void logCrash(const std::string& message, std::regex regex) {
+        std::string logmessage = "[CRASH] " + message;
+        if (std::regex_search(logmessage, regex))
+            log(logmessage);
+    }
+    static void logProcessInfo(const std::string& message, std::regex regex) {
+        std::string logmessage = "[PROCESS INFO] " + message;
+        if (std::regex_search(logmessage, regex))
+            log(logmessage);
+    }
+};
 
 class jpgManager {
     std::string inputFile;
@@ -39,16 +78,16 @@ public:
     void setMC(const int& n) {
         mutationCount = n;
     }
-    void mutate() {
+    void mutate(std::regex regex) {
         std::ifstream inFile(inputFile, std::ios::binary);
         if (!inFile) {
-            std::cerr << "[ERROR] Failed to open input file: " << inputFile << std::endl;
+            Logger::logError("Failed to open input file: " + inputFile, regex);
             return;
         }
 
         std::ofstream outFile(outputFile, std::ios::binary);
         if (!outFile) {
-            std::cerr << "[ERROR] Failed to open output file: " << outputFile << std::endl;
+            Logger::logError("Failed to open input file: " + outputFile, regex);
             return;
         }
 
@@ -72,7 +111,7 @@ public:
 
 class algorithm {
 protected:
-    virtual void execute() = 0;
+    virtual void execute(std::regex regex) = 0;
 };
 
 class dumb_algorithm : algorithm {
@@ -84,7 +123,7 @@ public:
     dumb_algorithm(std::string p, std::string q, int i, int m) : programPath(p), exampleQuery(q), iteration_count(i), current_mutation(m) {
 
     };
-    void execute() {
+    void execute(std::regex regex) {
         std::wstring wstrp(programPath.begin(), programPath.end());
         wchar_t* wcharprogramPath = new wchar_t[wstrp.size() + 1];
         std::wcscpy(wcharprogramPath, wstrp.c_str());
@@ -111,7 +150,7 @@ public:
         }
 
         jpgManager mutationEngine(exampleQuery, exampleOutFile, distr(gen));
-        mutationEngine.mutate();
+        mutationEngine.mutate(regex);
 
         for (int i{}; i < iteration_count; ++i) {
 
@@ -134,32 +173,32 @@ public:
                 &si,
                 &pi
             )) {
-                printf("[ERROR] CreateProcess failed (%d).\n", GetLastError());
+                Logger::logError("CreateProcess failed " + GetLastError(), regex);
             }
             else {
                 crashes_detected++;
                 DWORD exitCode;
                 if (WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0) {
                     if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
-                        std::cerr << "[UNEXPECTED] Failed to get exit code of the process. Saving file: " << current_mutation << ".jpg\n";
+                        Logger::logUnexpected("Failed to get exit code of the process. Saving file: " + std::to_string(current_mutation) + ".jpg", regex);
                     }
                     else if (exitCode == STATUS_ACCESS_VIOLATION) {
-                        std::cout << "[CRASH] Process encountered an access violation. Saving file: " << current_mutation << ".jpg\n";
+                        Logger::logCrash("Process encountered an access violation. Saving file: " + std::to_string(current_mutation) + ".jpg", regex);
                     }
                     else {
-                        std::cout << "[PROCESS INFO] Process exited with code: " << exitCode << std::endl;
+                        Logger::logProcessInfo("Process exited with code: " + exitCode, regex);
                         crashes_detected--;
                         const fs::path filePath(exampleOutFile);
                         try {
                             fs::remove(filePath);
                         }
                         catch (const fs::filesystem_error& ex) {
-                            std::cout << "[ERROR] Failed to remove the file: " << ex.what() << "\n";
+                            Logger::logError("Failed to remove the file: " + exampleOutFile, regex);
                         }
                     }
                 }
                 else {
-                    std::cerr << "[UNEXPECTED] Process crashed or terminated unexpectedly. Saving file: " << current_mutation << ".jpg\n";
+                    Logger::logUnexpected("Process crashed or terminated unexpectedly. Saving file: " + std::to_string(current_mutation) + ".jpg", regex);
                 }
 
                 std::cout << i + 1 << " / " << iteration_count << std::endl;
@@ -178,7 +217,7 @@ public:
 
                 mutationEngine.setOut(exampleOutFile);
                 mutationEngine.setMC(distr(gen));
-                mutationEngine.mutate();
+                mutationEngine.mutate(regex);
             }
         }
     }
@@ -190,7 +229,7 @@ class dumb_algorithm_th : algorithm {
     std::string exampleQuery;
     int iteration_count;
     int current_mutation;
-    void checkForCrash(wchar_t* wcharprogramPath, std::string exampleOutFile, jpgManager mutationEngine, STARTUPINFO si, PROCESS_INFORMATION pi, int a, int i) {
+    void checkForCrash(wchar_t* wcharprogramPath, std::string exampleOutFile, jpgManager mutationEngine, STARTUPINFO si, PROCESS_INFORMATION pi, int a, int i, std::regex regex) {
         std::string exampleOutFile2 = " ";
         exampleOutFile2 += exampleOutFile;
         exampleOutFile2 += " ";
@@ -254,12 +293,12 @@ class dumb_algorithm_th : algorithm {
 
             mutationEngine.setOut(exampleOutFile);
             mutationEngine.setMC(a);
-            mutationEngine.mutate();
+            mutationEngine.mutate(regex);
         }
     }
 public:
     dumb_algorithm_th(std::string p, std::string q, int i, int m) : programPath(p), exampleQuery(q), iteration_count(i), current_mutation(m) {};
-    void execute() {
+    void execute(std::regex regex) {
         std::wstring wstrp(programPath.begin(), programPath.end());
         wchar_t* wcharprogramPath = new wchar_t[wstrp.size() + 1];
         std::wcscpy(wcharprogramPath, wstrp.c_str());
@@ -286,15 +325,18 @@ public:
         }
 
         jpgManager mutationEngine(exampleQuery, exampleOutFile, distr(gen));
-        mutationEngine.mutate();
+        mutationEngine.mutate(regex);
 
-        int numThreads = iteration_count;
+        int numThreads = 4;
         std::vector<std::thread> threads;
-        for (int i = 0; i < numThreads; ++i) {
-            int a = distr(gen);
-            threads.emplace_back([&, wcharprogramPath, exampleOutFile, mutationEngine, si, pi, a, i]() {
-                checkForCrash(wcharprogramPath, exampleOutFile, mutationEngine, si, pi, a, i);
-                });
+        for (int i{}; i < iteration_count / numThreads; ++i) {
+            for (int j = 0; j < numThreads; ++j) {
+                int a = distr(gen);
+                int b = i * numThreads + j;
+                threads.emplace_back([&, wcharprogramPath, exampleOutFile, mutationEngine, si, pi, a, b]() {
+                    checkForCrash(wcharprogramPath, exampleOutFile, mutationEngine, si, pi, a, b, regex);
+                    });
+            }
         }
         for (std::thread& thread : threads) {
             thread.join();
@@ -415,7 +457,7 @@ private:
     }
 public:
     genetic_algorithm(const std::string& i, const std::string& q, int n) : programPath(i), exampleQuery(q), crashnum(n) {};
-    void execute() {
+    void execute(std::regex regex) {
         const int POPULATION_SIZE = 10;
         const int MAX_GENERATIONS = 100;
         const double MUTATION_RATE = 0.1;
@@ -433,7 +475,7 @@ public:
             fs::path eoutpath = examplepath.parent_path() / outfilename;
             inputFile += eoutpath.string();
             jpgManager mutationEngine(exampleQuery, inputFile, 30);
-            mutationEngine.mutate();
+            mutationEngine.mutate(regex);
         }
 
         int generation{};
@@ -465,7 +507,7 @@ public:
             for (auto& individual : nextGeneration) {
                 if (static_cast<double>(std::rand()) / RAND_MAX < MUTATION_RATE) {
                     jpgManager mutationEngine(individual, individual, 15);
-                    mutationEngine.mutate();
+                    mutationEngine.mutate(regex);
                 }
             }
             population = std::move(nextGeneration);
@@ -539,23 +581,152 @@ public:
 
 class Fuzzer {
 public:
-    void run(int argc, char** argv) {
+    /*void run(int argc, char** argv) {
         input_manager i(argc, argv);
         std::string testedProgram = i.get_filename();
         std::string sampleFile = i.get_sample();
         int iterations = i.get_iteration_count();
         std::string algorithm = i.get_algorithm();
-        std::string loggerType = i.get_logger_type();
-        std::string loggerPath = i.get_logger_path();
 
         dumb_algorithm fuzzing(testedProgram, sampleFile, iterations, 0);
         fuzzing.execute();
+    }*/
+
+    void gui_run(std::string pp, std::string fp, int i, std::string a, std::string l, std::regex regex) {
+        dumb_algorithm fuzzing(pp, fp, i, 0);
+        fuzzing.execute(regex);
     }
 };
-
-int main(int argc, char** argv)
+enum class AlgorithmType
 {
-    Fuzzer fuzzer;
-    fuzzer.run(argc, argv);
-    std::cout << "crashes: " << crashes_detected << std::endl;
+    RANDOM,
+    GENETIC
+};
+
+enum class LoggerType
+{
+    STD
+};
+
+class MainFrame : public wxFrame
+{
+public:
+    MainFrame(const wxString& title)
+        : wxFrame(NULL, wxID_ANY, title)
+    {
+        // Create the GUI controls
+        wxPanel* panel = new wxPanel(this);
+        wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
+
+        wxStaticText* programLabel = new wxStaticText(panel, wxID_ANY, "Program Path:");
+        programTextCtrl = new wxTextCtrl(panel, wxID_ANY);
+        wxStaticText* sampleLabel = new wxStaticText(panel, wxID_ANY, "Sample File Path:");
+        sampleTextCtrl = new wxTextCtrl(panel, wxID_ANY);
+        wxStaticText* iterationsLabel = new wxStaticText(panel, wxID_ANY, "Iterations:");
+        iterationsSpinCtrl = new wxSpinCtrl(panel, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS, 1, INT_MAX, 1);
+        wxStaticText* algorithmLabel = new wxStaticText(panel, wxID_ANY, "Algorithm Type:");
+        algorithmChoice = new wxChoice(panel, wxID_ANY);
+        wxStaticText* loggerLabel = new wxStaticText(panel, wxID_ANY, "Logger Type:");
+        loggerChoice = new wxChoice(panel, wxID_ANY);
+        wxStaticText* logFilterLabel = new wxStaticText(panel, wxID_ANY, "Log Filter:");
+        errorCheckBox = new wxCheckBox(panel, wxID_ANY, "Error");
+        processInfoCheckBox = new wxCheckBox(panel, wxID_ANY, "Process Info");
+        unexpectedCheckBox = new wxCheckBox(panel, wxID_ANY, "Unexpected");
+        crashCheckBox = new wxCheckBox(panel, wxID_ANY, "Crash");
+        logButton = new wxButton(panel, wxID_ANY, "Run");
+        logTextCtrl = new wxTextCtrl(panel, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE | wxTE_READONLY);
+
+        // Add the controls to the sizer
+        sizer->Add(programLabel, 0, wxALL, 5);
+        sizer->Add(programTextCtrl, 0, wxALL, 5);
+        sizer->Add(sampleLabel, 0, wxALL, 5);
+        sizer->Add(sampleTextCtrl, 0, wxALL, 5);
+        sizer->Add(iterationsLabel, 0, wxALL, 5);
+        sizer->Add(iterationsSpinCtrl, 0, wxALL, 5);
+        sizer->Add(algorithmLabel, 0, wxALL, 5);
+        sizer->Add(algorithmChoice, 0, wxALL, 5);
+        sizer->Add(loggerLabel, 0, wxALL, 5);
+        sizer->Add(loggerChoice, 0, wxALL, 5);
+        sizer->Add(logFilterLabel, 0, wxALL, 5);
+        sizer->Add(errorCheckBox, 0, wxALL, 5);
+        sizer->Add(processInfoCheckBox, 0, wxALL, 5);
+        sizer->Add(unexpectedCheckBox, 0, wxALL, 5);
+        sizer->Add(crashCheckBox, 0, wxALL, 5);
+        sizer->Add(logButton, 0, wxALL, 5);
+        sizer->Add(logTextCtrl, 1, wxEXPAND | wxALL, 5);
+
+        panel->SetSizer(sizer);
+
+        // Bind events
+        logButton->Bind(wxEVT_BUTTON, &MainFrame::OnLogButtonClicked, this);
+
+        // Populate algorithm choice
+        algorithmChoice->Append("RANDOM");
+        algorithmChoice->Append("GENETIC");
+
+        // Populate logger choice
+        loggerChoice->Append("STD");
+    }
+
+private:
+    void OnLogButtonClicked(wxCommandEvent& event)
+    {
+        wxString programPath = programTextCtrl->GetValue();
+        wxString sampleFilePath = sampleTextCtrl->GetValue();
+        int iterationsNumber = iterationsSpinCtrl->GetValue();
+        wxString algorithmType = algorithmChoice->GetString(algorithmChoice->GetSelection());
+        wxString loggerType = loggerChoice->GetString(loggerChoice->GetSelection());
+
+        wxString logsOfInterest = "NOT_MATCHING";
+        if (errorCheckBox->GetValue())
+            logsOfInterest += "|ERROR";
+        if (processInfoCheckBox->GetValue())
+            logsOfInterest += "|PROCESS INFO";
+        if (unexpectedCheckBox->GetValue())
+            logsOfInterest += "|UNEXPECTED";
+        if (crashCheckBox->GetValue())
+            logsOfInterest += "|CRASH";
+        
+        std::regex regex(logsOfInterest);
+        Fuzzer fuzzer;
+        fuzzer.gui_run(programPath.ToStdString(), sampleFilePath.ToStdString(), iterationsNumber, algorithmType.ToStdString(), loggerType.ToStdString(), regex);
+
+        wxString output = wxString::Format("Program Path: %s\nSample File Path: %s\nIterations: %d\nAlgorithm Type: %s\nLogger Type: %s\nLogs of Interest: %s\nCrashes detected: %d",
+            programPath, sampleFilePath, iterationsNumber, algorithmType, loggerType, logsOfInterest, crashes_detected);
+
+        logTextCtrl->SetValue(output);
+    }
+
+    wxTextCtrl* programTextCtrl;
+    wxTextCtrl* sampleTextCtrl;
+    wxSpinCtrl* iterationsSpinCtrl;
+    wxChoice* algorithmChoice;
+    wxChoice* loggerChoice;
+    wxCheckBox* errorCheckBox;
+    wxCheckBox* processInfoCheckBox;
+    wxCheckBox* unexpectedCheckBox;
+    wxCheckBox* crashCheckBox;
+    wxButton* logButton;
+    wxTextCtrl* logTextCtrl;
+
+    wxDECLARE_EVENT_TABLE();
+};
+
+wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
+EVT_BUTTON(wxID_ANY, MainFrame::OnLogButtonClicked)
+wxEND_EVENT_TABLE()
+
+class MyApp : public wxApp
+{
+public:
+    virtual bool OnInit();
+};
+
+bool MyApp::OnInit()
+{
+    MainFrame* frame = new MainFrame("Logger GUI");
+    frame->Show(true);
+    return true;
 }
+
+wxIMPLEMENT_APP(MyApp);
